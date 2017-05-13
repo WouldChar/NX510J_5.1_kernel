@@ -6257,6 +6257,385 @@ static int create_debugfs_entries(struct smbchg_chip *chip)
 	}
 	return 0;
 }
+#ifdef CONFIG_ZTEMT_POWER_DEBUG
+
+static void print_battery_information(struct smbchg_chip *chip)
+{
+  #ifdef CONFIG_ZTEMT_BATTERY_MAX17050
+  return;
+  #endif
+   int ocv_uv ;
+  set_property_on_fg(chip, POWER_SUPPLY_PROP_UPDATE_NOW, 1);
+
+  get_property_from_fg(chip, POWER_SUPPLY_PROP_VOLTAGE_OCV, &ocv_uv);
+
+  printk("BMS capacity=%d current=%d vbat_uv=%d vbat_ocv_uv=%d batt_temp=%d	usb_in=%d chg_vol=%d pmic_temp=%d batt_pres=%d\n",\
+    get_prop_batt_capacity(chip),
+    get_prop_batt_current_now(chip),
+    get_prop_batt_voltage_now(chip),
+    ocv_uv,
+    get_prop_batt_temp(chip),
+    is_usb_present(chip),
+#ifdef CONFIG_ZTEMT_MSM8994_CHARGER
+    get_prop_charger_voltage_now(chip)/1000,
+	get_prop_pmic_temp(chip)/1000,
+#else
+	0,
+	0,
+#endif
+
+    get_prop_batt_present(chip));
+    //qpnp_chg_is_usb_chg_plugged_in(chip));
+
+}
+
+static void power_debug_work_func(struct work_struct *work)
+{
+	struct smbchg_chip *chip = container_of(work,
+	                                          struct smbchg_chip,
+	                                          power_debug_work.work);
+	printk("power_debug_work_func_______start!\n");
+	//print battery related information
+	print_battery_information(chip);
+	//print wakelocks
+	global_print_active_locks();
+	//wakelock_stats_show_debug();
+	schedule_delayed_work(&chip->power_debug_work,
+			  round_jiffies_relative(msecs_to_jiffies
+						(POWER_MONITOR_PERIOD_MS)));
+	printk("power_debug_work_func_________over!\n");
+
+}
+
+static int power_debug_work_control(int on)
+{
+	int ret;
+	struct smbchg_chip *chip = chip_temp;
+	if(1==on)
+	{
+		if(1==power_debug_switch)
+		{
+			printk("%s:The power_debug_work is already on\n",__func__);
+			ret=1;
+		}
+		else
+		{
+			power_debug_switch=1;
+			msm_show_resume_irq_mask=1;
+			INIT_DELAYED_WORK(&chip->power_debug_work,  power_debug_work_func);
+			schedule_delayed_work(&chip->power_debug_work,
+			  round_jiffies_relative(msecs_to_jiffies
+						(POWER_MONITOR_PERIOD_MS)));
+			printk("%s:enable power_debug_work.\n",__func__);
+		}
+	}
+	else
+	{
+
+		if(0==power_debug_switch)
+		{
+			printk("%s:The power_debu_timer is already off\n",__func__);
+			ret=1;
+		}
+		else
+		{
+			power_debug_switch=0;
+			msm_show_resume_irq_mask=0;
+			cancel_delayed_work(&chip->power_debug_work);
+			printk("%s:disable power_debug_work.\n",__func__);
+		}
+
+	}
+	return ret;
+}
+
+
+static ssize_t po_info_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+
+	sprintf(buf, "%u\n", power_debug_switch);
+	return 1;
+}
+static ssize_t po_info_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+
+	unsigned int val;
+
+	if (sscanf(buf, "%u", &val) == 1) {
+		if (power_debug_work_control(val))
+			return count;
+	}
+	return -EINVAL;
+}
+
+static ssize_t clock_dump_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+
+	sprintf(buf, "%u\n", power_debug_switch);
+	clock_debug_print_enabled();
+	return 1;
+}
+
+static DEVICE_ATTR(switch, 0644, po_info_show, po_info_store);
+static DEVICE_ATTR(clock_dump, 0644,  clock_dump_show, NULL);
+static struct kobject *po_kobject = NULL;
+
+static int power_debug_init(struct smbchg_chip *chip)
+{
+	int ret;
+	chip_temp = chip;
+	po_kobject = kobject_create_and_add(DRV_NAME, NULL);
+	if(po_kobject == NULL) {
+		ret = -ENOMEM;
+		goto err1;
+	}
+
+	ret = sysfs_create_file(po_kobject, &dev_attr_switch.attr);
+	ret |= sysfs_create_file(po_kobject, &dev_attr_clock_dump.attr);
+	if(ret){
+		goto err;
+	}
+
+	INIT_DELAYED_WORK(&chip->power_debug_work,  power_debug_work_func);
+
+	if(power_debug_switch) {
+	  msm_show_resume_irq_mask=1; //on in default, deleted is allow.
+	  schedule_delayed_work(&chip->power_debug_work,
+			  round_jiffies_relative(msecs_to_jiffies
+						(POWER_MONITOR_PERIOD_MS)));
+	}
+	return 0;
+
+err:
+	kobject_del(po_kobject);
+err1:
+	printk(DRV_NAME": Failed to create sys file\n");
+	return ret;
+}
+#endif
+
+#ifdef CONFIG_ZTEMT_MSM8994_CHARGER
+#define DEFAULT_PMIC_TEMP 	 0
+static int get_prop_pmic_temp(struct smbchg_chip *chip)
+{
+	int rc = 0;
+	struct qpnp_vadc_result results;
+	if(!chip->vadc_dev){
+		chip->vadc_dev = qpnp_get_vadc(chip->dev, "dcin");
+		if (IS_ERR(chip->vadc_dev)) {
+			DBG_CHARGE(" vadc_dev NULL ! \n");
+			return DEFAULT_PMIC_TEMP;
+		}
+	}
+
+	if(chip->vadc_dev){
+		rc = qpnp_vadc_read(chip->vadc_dev,DIE_TEMP, &results);
+		if (rc) {
+			pr_err("Unable to read batt temperature rc=%d\n", rc);
+			return DEFAULT_PMIC_TEMP;
+		}
+	}
+	else
+		return DEFAULT_PMIC_TEMP;
+
+	pr_smb(PR_STATUS,"get_pmic_temp %d %lld\n",
+		results.adc_code, results.physical);
+	return (int)results.physical;
+}
+/*
+* Get The Charger Voltage
+*/
+#define DEFAULT_CHG_VOLTAGE_NOW	 0
+static int get_prop_charger_voltage_now(struct smbchg_chip *chip)
+{
+	int rc = 0;
+	struct qpnp_vadc_result results;
+
+	if(!chip->vadc_dev){
+		  chip->vadc_dev = qpnp_get_vadc(chip->dev, "dcin");
+			if (IS_ERR(chip->vadc_dev)) {
+				DBG_CHARGE(" vadc_dev NULL ! \n");
+				return DEFAULT_CHG_VOLTAGE_NOW;
+		}
+	}
+
+	if(chip->vadc_dev){
+		rc = qpnp_vadc_read(chip->vadc_dev, USBIN, &results);
+		if (rc) {
+				pr_err("Unable to read usbin rc=%d\n", rc);
+				return DEFAULT_CHG_VOLTAGE_NOW ;
+			} else {
+			return results.physical;
+		}
+	}
+	else
+		return DEFAULT_CHG_VOLTAGE_NOW ;
+}
+
+#ifdef CONFIG_ZTEMT_CHARGE_PLUS_X_MODE
+#define BATTERY_NTC_COOL      0
+#define BATTERY_NTC_COLD     100
+#define BATTERY_NTC_WARM   420
+#define BATTERY_NTC_HOT      500
+void smbchg_xcharge_mode_en(struct smbchg_chip *chip ,bool xcharge_mode_en){
+	int batt_ntc_temp;
+  int batt_ntc_change;
+  unsigned int	therm_lvl;
+	union power_supply_propval prop = {0, };
+
+	if(!chip)
+		return ;
+
+	if(!xcharge_mode_en){
+		return ;
+	}
+
+	if (chip->usb_psy && !chip->usb_psy->get_property(chip->usb_psy,
+		  POWER_SUPPLY_PROP_TYPE,	&prop)) {
+		if ((prop.intval == POWER_SUPPLY_TYPE_USB_HVDCP) ||
+							(prop.intval == POWER_SUPPLY_TYPE_USB_DCP)) {
+				 //
+		}
+		else
+			return ;
+	}
+	else
+		return ;
+
+	if(chip->first_time_calc_lvl){
+		/*Disable the */
+		 chip->therm_lvl_sel = 0 ;
+		 chip->post_batt_ntc_temp = DEFAULT_BATT_TEMP;
+		 return ;
+	}
+
+	batt_ntc_temp = get_prop_batt_temp(chip	);
+	batt_ntc_change =(int) abs(batt_ntc_temp-chip->post_batt_ntc_temp);
+	if( batt_ntc_change >=10)
+	 chip->post_batt_ntc_temp =batt_ntc_temp ;
+
+	if((batt_ntc_temp>=BATTERY_NTC_HOT) ||
+			(batt_ntc_temp<=BATTERY_NTC_COOL))
+			/*Disable Charging*/
+				 therm_lvl = chip->thermal_levels - 2;
+	else if(batt_ntc_change>=10){
+		  pr_debug("@@@ batt_ntc_change:%d  \n ", batt_ntc_change);
+			if((batt_ntc_temp> BATTERY_NTC_WARM)||
+					(batt_ntc_temp< BATTERY_NTC_COLD))
+					therm_lvl = chip->thermal_levels - 3;
+		  else
+			/* Normal Charging Range */
+					 therm_lvl = chip->thermal_levels - 4;
+	}
+	else
+		/* Setting Last Current Limitation */
+		 therm_lvl = chip->therm_lvl_sel;
+	
+  pr_debug("@@@ therm_lvl_sel:%d,therm_lvl:%d \n ",
+						chip->therm_lvl_sel, therm_lvl);
+  pr_debug("@@@ curr = %d, lev = %d \n", chip->thermal_mitigation[0],chip->thermal_levels);
+
+  smbchg_system_temp_level_set(chip,	therm_lvl);
+}
+#endif
+
+#define USB_CURRENT_REG_VAL_500mA  0x04
+static void smbchg_check_the_usb_current(struct smbchg_chip *chip)
+{
+       int rc;
+	u8 reg ,usb_curr_reg_val;
+
+       if(chip->insert_charger_type == POWER_SUPPLY_TYPE_USB){
+            rc = smbchg_read(chip, &reg, chip->usb_chgpth_base + IL_CFG, 1);
+            if (rc < 0) {
+                dev_err(chip->dev, "Unable to read IL_CFG rc = %d\n", rc);
+                return ;
+            }
+            usb_curr_reg_val = reg&USBIN_INPUT_MASK;
+            if (usb_curr_reg_val != USB_CURRENT_REG_VAL_500mA ) {
+                printk("jing smbchg_check_the_usb_current  reg:%d",reg);
+                smbchg_set_usb_current_max(chip, CURRENT_500_MA);
+            }
+       }
+}
+
+#define SMBCHARGE_CONSECUTIVE_COUNT 	3
+static void
+eoc_work(struct work_struct *work)
+{
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct smbchg_chip *chip = container_of(dwork,
+				struct smbchg_chip, zte_eoc_work);
+	static int count;
+	int eoc_period_ms;
+	bool usb_present;
+    /*
+	struct smbchg_chip *chip = container_of(work,
+				struct smbchg_chip,
+				charge_check_work.work);
+    */
+      if(!chip){	return ; }
+
+      smbchg_check_the_usb_current(chip);
+
+      DBG_CHARGE(" BATT:vol:%d,cur:%d,temp:%d,stat:%d,CHG:vol:%d,temp:%d,capacity:%d,stat:%d,cur:%d,usbin:%d \n",
+		get_prop_batt_voltage_now(chip)/1000,
+		get_prop_batt_current_now(chip)/1000,
+		get_prop_batt_temp(chip)/10,
+		get_prop_batt_status(chip),
+		get_prop_charger_voltage_now(chip)/1000,
+		get_prop_pmic_temp(chip)/1000,
+		get_prop_batt_capacity(chip),
+		get_prop_charge_type(chip),
+		chip->usb_target_current_ma,
+		chip->usb_present);
+
+        usb_present = is_usb_present(chip) ;
+        if( usb_present ){
+		count = 0;
+		#ifdef CONFIG_ZTEMT_CHARGE_PLUS_X_MODE
+		smbchg_xcharge_mode_en(chip,true);
+		#endif
+	} else {
+		if (count >= SMBCHARGE_CONSECUTIVE_COUNT) {
+			goto stop_work;
+		}else{
+			count += 1;
+			DBG_CHARGE("WD Count = %d \n", count);
+		}
+        }
+
+	if(count){
+		eoc_period_ms =ZTE_EOC_PERIOD_FAST_MS;
+	}else{
+		eoc_period_ms =ZTE_EOC_PERIOD_LOW_MS;
+	}
+	schedule_delayed_work(&chip->zte_eoc_work,
+			msecs_to_jiffies(eoc_period_ms));
+	return;
+
+stop_work:
+	count = 0;
+	DBG_CHARGE("Stop Check Work!\n");
+	//smbchg_relax(chip,PM_REASON_EOC_CHECK);
+	if(wake_lock_active(&chip->eoc_wake_lock))
+			wake_unlock(&chip->eoc_wake_lock);
+}
+
+static void start_eoc_work(struct smbchg_chip *chip)
+{
+  if(!chip) return ;
+	//smbchg_stay_awake(chip,PM_REASON_EOC_CHECK);
+	if ( !wake_lock_active(&chip->eoc_wake_lock)) {
+			wake_lock(&chip->eoc_wake_lock);
+	}
+	schedule_delayed_work(&chip->zte_eoc_work,
+					msecs_to_jiffies(ZTE_EOC_PERIOD_FAST_MS));
+}
+#endif
 
 static int smbchg_wa_config(struct smbchg_chip *chip)
 {
