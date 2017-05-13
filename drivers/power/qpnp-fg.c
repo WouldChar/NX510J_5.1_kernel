@@ -1303,12 +1303,6 @@ static int get_prop_capacity(struct fg_chip *chip)
 		if (fg_debug_mask & FG_POWER_SUPPLY)
 			pr_info_ratelimited("capacity: %d, EMPTY\n",
 					EMPTY_CAPACITY);
-#ifdef CONFIG_ZTEMT_MSM8994_FUEL_GAUGE
-	if(debug_mask_fg & debug_mask_capacity){
-		pr_info("charger:jing capacity: %d, raw[0]: 0x%02x  raw[1]: 0x%02x\n",
-				capacity, cap[0], cap[1]);
-	}
-#endif
 		return EMPTY_CAPACITY;
 	}
 	msoc = get_monotonic_soc_raw(chip);
