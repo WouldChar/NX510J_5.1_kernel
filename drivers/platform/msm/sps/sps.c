@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -164,9 +164,10 @@ static ssize_t sps_set_info(struct file *file, const char __user *buf,
 	int i;
 	u32 buf_size_kb = 0;
 	u32 new_buf_size;
+	u32 size = sizeof(str) < count ? sizeof(str) : count;
 
 	memset(str, 0, sizeof(str));
-	missing = copy_from_user(str, buf, sizeof(str));
+	missing = copy_from_user(str, buf, size);
 	if (missing)
 		return -EFAULT;
 
@@ -254,9 +255,10 @@ static ssize_t sps_set_logging_option(struct file *file, const char __user *buf,
 	char str[MAX_MSG_LEN];
 	int i;
 	u8 option = 0;
+	u32 size = sizeof(str) < count ? sizeof(str) : count;
 
 	memset(str, 0, sizeof(str));
-	missing = copy_from_user(str, buf, sizeof(str));
+	missing = copy_from_user(str, buf, size);
 	if (missing)
 		return -EFAULT;
 
@@ -303,9 +305,10 @@ static ssize_t sps_set_bam_addr(struct file *file, const char __user *buf,
 	struct sps_bam *bam;
 	u32 num_pipes = 0;
 	void *vir_addr;
+	u32 size = sizeof(str) < count ? sizeof(str) : count;
 
 	memset(str, 0, sizeof(str));
-	missing = copy_from_user(str, buf, sizeof(str));
+	missing = copy_from_user(str, buf, size);
 	if (missing)
 		return -EFAULT;
 
@@ -2415,6 +2418,7 @@ EXPORT_SYMBOL(sps_pipe_pending_desc);
 int sps_bam_process_irq(unsigned long dev)
 {
 	struct sps_bam *bam;
+	int ret = 0;
 
 	SPS_DBG("sps:%s.", __func__);
 
@@ -2429,9 +2433,9 @@ int sps_bam_process_irq(unsigned long dev)
 		return SPS_ERROR;
 	}
 
-	sps_bam_check_irq(bam);
+	ret = sps_bam_check_irq(bam);
 
-	return 0;
+	return ret;
 }
 EXPORT_SYMBOL(sps_bam_process_irq);
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -739,16 +739,23 @@ static void ipa_rx_switch_to_intr_mode(struct ipa_sys_context *sys)
 {
 	int ret;
 
-	if (!atomic_read(&sys->curr_polling_state)) {
-		IPAERR("already in intr mode\n");
-		goto fail;
-	}
-
 	ret = sps_get_config(sys->ep->ep_hdl, &sys->ep->connect);
 	if (ret) {
 		IPAERR("sps_get_config() failed %d\n", ret);
 		goto fail;
 	}
+
+	if (!atomic_read(&sys->curr_polling_state) &&
+		((sys->ep->connect.options & SPS_O_EOT) == SPS_O_EOT)) {
+		IPADBG("already in intr mode\n");
+		return;
+	}
+
+	if (!atomic_read(&sys->curr_polling_state)) {
+		IPAERR("Not in poll mode, and IRQ not enabled.\n");
+		goto fail;
+	}
+
 	sys->event.options = SPS_O_EOT;
 	ret = sps_register_event(sys->ep->ep_hdl, &sys->event);
 	if (ret) {
@@ -814,6 +821,38 @@ static void ipa_sps_irq_rx_notify(struct sps_event_notify *notify)
 		break;
 	default:
 		IPAERR("recieved unexpected event id %d\n", notify->event_id);
+	}
+}
+
+void ipa_sps_irq_rx_notify_all(void)
+{
+	struct sps_event_notify notify;
+	struct ipa_ep_context *ep;
+	int ipa_ep_idx, client_num;
+
+	IPADBG("\n");
+
+	for (client_num = IPA_CLIENT_CONS;
+		client_num < IPA_CLIENT_MAX; client_num++) {
+		if ((client_num != IPA_CLIENT_APPS_LAN_CONS) &&
+			(client_num != IPA_CLIENT_APPS_WAN_CONS))
+			continue;
+
+		memset(&notify, 0, sizeof(notify));
+		ipa_ep_idx = ipa_get_ep_mapping(client_num);
+		if (ipa_ep_idx == -1) {
+			IPAERR("Invalid client.\n");
+			continue;
+		}
+		ep = &ipa_ctx->ep[ipa_ep_idx];
+		if (!ep->valid) {
+			IPAERR("EP (%d) not allocated.\n", ipa_ep_idx);
+			continue;
+		}
+		notify.user = ep->sys;
+		notify.event_id = SPS_EVENT_EOT;
+		if (ep->sys->sps_callback)
+			ep->sys->sps_callback(&notify);
 	}
 }
 
