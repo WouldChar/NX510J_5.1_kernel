@@ -151,11 +151,7 @@ void log_suspend_abort_reason(const char *fmt, ...)
 
 	suspend_abort = true;
 	va_start(args, fmt);
-<<<<<<< HEAD
-	snprintf(abort_reason, MAX_SUSPEND_ABORT_LEN, fmt, args);
-=======
 	vsnprintf(abort_reason, MAX_SUSPEND_ABORT_LEN, fmt, args);
->>>>>>> LA.BF64.1.2.3_rb1.12
 	va_end(args);
 	spin_unlock(&resume_reason_lock);
 }

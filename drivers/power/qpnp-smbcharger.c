@@ -3952,6 +3952,9 @@ static void handle_usb_removal(struct smbchg_chip *chip)
 	int rc;
 
 	pr_smb(PR_STATUS, "triggered\n");
+#ifdef CONFIG_ZTEMT_MSM8994_CHARGER
+        chip->bad_charger =  false;
+#endif
 	smbchg_aicl_deglitch_wa_check(chip);
 	if (chip->force_aicl_rerun && !chip->very_weak_charger) {
 		rc = smbchg_hw_aicl_rerun_en(chip, true);
@@ -3989,6 +3992,12 @@ static void handle_usb_removal(struct smbchg_chip *chip)
 	}
 	chip->parallel.enabled_once = false;
 	chip->vbat_above_headroom = false;
+#ifdef CONFIG_ZTEMT_MSM8994_CHARGER
+       chip->chg_done_batt_full = false;
+#ifdef CONFIG_ZTEMT_CHARGE_PLUS_X_MODE
+	smbchg_xcharge_mode_en(chip,false);
+#endif
+#endif
 	rc = smbchg_masked_write(chip, chip->usb_chgpth_base + CMD_IL,
 			ICL_OVERRIDE_BIT, 0);
 	if (rc < 0)
@@ -4025,6 +4034,24 @@ static void handle_usb_insertion(struct smbchg_chip *chip)
 	pr_smb(PR_STATUS,
 		"inserted type = %d (%s)", usb_supply_type, usb_type_name);
 
+#ifdef CONFIG_ZTEMT_CHARGE_PLUS_X_MODE
+	   chip->post_batt_ntc_temp = DEFAULT_BATT_TEMP;
+	   chip->first_time_calc_lvl = 1;
+#endif
+	smbchg_aicl_deglitch_wa_check(chip);
+	if (chip->usb_psy) {
+		pr_smb(PR_MISC, "setting usb psy type = %d\n",
+				usb_supply_type);
+#ifdef CONFIG_ZTEMT_MSM8994_CHARGER
+	       if(usb_supply_type == POWER_SUPPLY_TYPE_USB_DCP){
+	  	    power_supply_set_supply_type(chip->usb_psy, usb_supply_type);
+	       }
+	 	DBG_CHARGE("inserted %s, usb psy type = %d \n",
+			usb_type_name, usb_supply_type); 
+              chip->insert_charger_type = usb_supply_type;
+#else
+		power_supply_set_supply_type(chip->usb_psy, usb_supply_type);
+#endif
 	smbchg_aicl_deglitch_wa_check(chip);
 	if (chip->usb_psy) {
 		pr_smb(PR_MISC, "setting usb psy type = %d\n",
@@ -4055,7 +4082,26 @@ static void handle_usb_insertion(struct smbchg_chip *chip)
 	if (usb_supply_type == POWER_SUPPLY_TYPE_USB_DCP)
 		schedule_delayed_work(&chip->hvdcp_det_work,
 					msecs_to_jiffies(HVDCP_NOTIFY_MS));
+#ifdef CONFIG_ZTEMT_MSM8994_CHARGER
+        DBG_CHARGE("start hvdcp_det_work\n");
+#endif
+	}
+	if (parallel_psy) {
+		rc = power_supply_set_present(parallel_psy, true);
+		chip->parallel_charger_detected = rc ? false : true;
+		if (rc)
+			pr_debug("parallel-charger absent rc=%d\n", rc);
+	}
 
+	if (chip->parallel.avail && chip->aicl_done_irq
+			&& !chip->enable_aicl_wake) {
+		rc = enable_irq_wake(chip->aicl_done_irq);
+		chip->enable_aicl_wake = true;
+	}
+
+#ifdef CONFIG_ZTEMT_MSM8994_CHARGER
+        start_eoc_work(chip);
+#endif
 	mutex_lock(&chip->current_change_lock);
 	if (usb_supply_type == POWER_SUPPLY_TYPE_USB)
 		chip->usb_target_current_ma = DEFAULT_SDP_MA;
@@ -4082,6 +4128,9 @@ static void handle_usb_insertion(struct smbchg_chip *chip)
 		rc = enable_irq_wake(chip->aicl_done_irq);
 		chip->enable_aicl_wake = true;
 	}
+#ifdef CONFIG_ZTEMT_MSM8994_CHARGER
+        start_eoc_work(chip);
+#endif
 }
 
 void update_usb_status(struct smbchg_chip *chip, bool usb_present, bool force)
@@ -4664,169 +4713,6 @@ static irqreturn_t dcin_uv_handler(int irq, void *_chip)
 
 	smbchg_wipower_check(chip);
 	return IRQ_HANDLED;
-}
-
-static void handle_usb_removal(struct smbchg_chip *chip)
-{
-	struct power_supply *parallel_psy = get_parallel_psy(chip);
-	int rc;
-
-	pr_smb(PR_STATUS, "triggered\n");
-#ifdef CONFIG_ZTEMT_MSM8994_CHARGER
-        chip->bad_charger =  false;
-#endif
-	smbchg_aicl_deglitch_wa_check(chip);
-	if (chip->force_aicl_rerun && !chip->very_weak_charger) {
-		rc = smbchg_hw_aicl_rerun_en(chip, true);
-		if (rc)
-			pr_err("Error enabling AICL rerun rc= %d\n",
-				rc);
-	}
-	/* Clear the OV detected status set before */
-	if (chip->usb_ov_det)
-		chip->usb_ov_det = false;
-	if (chip->usb_psy) {
-		pr_smb(PR_MISC, "setting usb psy type = %d\n",
-				POWER_SUPPLY_TYPE_UNKNOWN);
-		power_supply_set_supply_type(chip->usb_psy,
-				POWER_SUPPLY_TYPE_UNKNOWN);
-		pr_smb(PR_MISC, "setting usb psy present = %d\n",
-				chip->usb_present);
-		power_supply_set_present(chip->usb_psy, chip->usb_present);
-		pr_smb(PR_MISC, "setting usb psy allow detection 0\n");
-		power_supply_set_allow_detection(chip->usb_psy, 0);
-		schedule_work(&chip->usb_set_online_work);
-		rc = power_supply_set_health_state(chip->usb_psy,
-				POWER_SUPPLY_HEALTH_UNKNOWN);
-		if (rc)
-			pr_smb(PR_STATUS,
-				"usb psy does not allow updating prop %d rc = %d\n",
-				POWER_SUPPLY_HEALTH_UNKNOWN, rc);
-	}
-	if (parallel_psy && chip->parallel_charger_detected)
-		power_supply_set_present(parallel_psy, false);
-	if (chip->parallel.avail && chip->aicl_done_irq
-			&& chip->enable_aicl_wake) {
-		disable_irq_wake(chip->aicl_done_irq);
-		chip->enable_aicl_wake = false;
-	}
-	chip->parallel.enabled_once = false;
-	chip->vbat_above_headroom = false;
-#ifdef CONFIG_ZTEMT_MSM8994_CHARGER
-       chip->chg_done_batt_full = false;
-#ifdef CONFIG_ZTEMT_CHARGE_PLUS_X_MODE
-	smbchg_xcharge_mode_en(chip,false);
-#endif
-#endif
-}
-
-static bool is_src_detect_high(struct smbchg_chip *chip)
-{
-	int rc;
-	u8 reg;
-
-	rc = smbchg_read(chip, &reg, chip->usb_chgpth_base + RT_STS, 1);
-	if (rc < 0) {
-		dev_err(chip->dev, "Couldn't read usb rt status rc = %d\n", rc);
-		return false;
-	}
-	return reg &= USBIN_SRC_DET_BIT;
-}
-
-static void read_usb_type(struct smbchg_chip *chip, char **usb_type_name,
-				enum power_supply_type *usb_supply_type)
-{
-	int rc, type;
-	u8 reg;
-
-	rc = smbchg_read(chip, &reg, chip->misc_base + IDEV_STS, 1);
-	if (rc < 0) {
-		dev_err(chip->dev, "Couldn't read status 5 rc = %d\n", rc);
-		*usb_type_name = "Other";
-		*usb_supply_type = POWER_SUPPLY_TYPE_UNKNOWN;
-	}
-	type = get_type(reg);
-	*usb_type_name = get_usb_type_name(type);
-	*usb_supply_type = get_usb_supply_type(type);
-}
-
-#define HVDCP_NOTIFY_MS		2500
-static void handle_usb_insertion(struct smbchg_chip *chip)
-{
-	struct power_supply *parallel_psy = get_parallel_psy(chip);
-	enum power_supply_type usb_supply_type;
-	int rc;
-	char *usb_type_name = "null";
-
-	pr_smb(PR_STATUS, "triggered\n");
-	/* usb inserted */
-	read_usb_type(chip, &usb_type_name, &usb_supply_type);
-	pr_smb(PR_STATUS,
-		"inserted type = %d (%s)", usb_supply_type, usb_type_name);
-
-#ifdef CONFIG_ZTEMT_CHARGE_PLUS_X_MODE
-	   chip->post_batt_ntc_temp = DEFAULT_BATT_TEMP;
-	   chip->first_time_calc_lvl = 1;
-#endif
-	smbchg_aicl_deglitch_wa_check(chip);
-	if (chip->usb_psy) {
-		pr_smb(PR_MISC, "setting usb psy type = %d\n",
-				usb_supply_type);
-#ifdef CONFIG_ZTEMT_MSM8994_CHARGER
-	       if(usb_supply_type == POWER_SUPPLY_TYPE_USB_DCP){
-	  	    power_supply_set_supply_type(chip->usb_psy, usb_supply_type);
-	       }
-	 	DBG_CHARGE("inserted %s, usb psy type = %d \n",
-			usb_type_name, usb_supply_type); 
-              chip->insert_charger_type = usb_supply_type;
-#else
-		power_supply_set_supply_type(chip->usb_psy, usb_supply_type);
-#endif
-		pr_smb(PR_MISC, "setting usb psy present = %d\n",
-				chip->usb_present);
-		power_supply_set_present(chip->usb_psy, chip->usb_present);
-		/* Notify the USB psy if OV condition is not present */
-		if (!chip->usb_ov_det) {
-			/*
-			 * Note that this could still be a very weak charger
-			 * if the handle_usb_insertion was triggered from
-			 * the falling edge of an USBIN_OV interrupt
-			 */
-			rc = power_supply_set_health_state(chip->usb_psy,
-					chip->very_weak_charger
-					? POWER_SUPPLY_HEALTH_UNSPEC_FAILURE
-					: POWER_SUPPLY_HEALTH_GOOD);
-			if (rc)
-				pr_smb(PR_STATUS,
-					"usb psy does not allow updating prop %d rc = %d\n",
-					POWER_SUPPLY_HEALTH_GOOD, rc);
-		}
-		schedule_work(&chip->usb_set_online_work);
-	}
-
-	if (usb_supply_type == POWER_SUPPLY_TYPE_USB_DCP){
-		schedule_delayed_work(&chip->hvdcp_det_work,
-					msecs_to_jiffies(HVDCP_NOTIFY_MS));
-#ifdef CONFIG_ZTEMT_MSM8994_CHARGER
-        DBG_CHARGE("start hvdcp_det_work\n");
-#endif
-	}
-	if (parallel_psy) {
-		rc = power_supply_set_present(parallel_psy, true);
-		chip->parallel_charger_detected = rc ? false : true;
-		if (rc)
-			pr_debug("parallel-charger absent rc=%d\n", rc);
-	}
-
-	if (chip->parallel.avail && chip->aicl_done_irq
-			&& !chip->enable_aicl_wake) {
-		rc = enable_irq_wake(chip->aicl_done_irq);
-		chip->enable_aicl_wake = true;
-	}
-
-#ifdef CONFIG_ZTEMT_MSM8994_CHARGER
-        start_eoc_work(chip);
-#endif
 }
 
 /**
@@ -6849,7 +6735,6 @@ static int smbchg_check_chg_version(struct smbchg_chip *chip)
 	return rc;
 }
 
->>>>>>> LA.BF64.1.2.3_rb1.12
 static int smbchg_probe(struct spmi_device *spmi)
 {
 	int rc;

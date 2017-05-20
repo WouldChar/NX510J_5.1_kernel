@@ -57,13 +57,12 @@ MODULE_PARM_DESC(ftrace_size, "size of ftrace log");
 #ifdef CONFIG_PSTORE
 static ulong mem_address = 0x9ff00000;
 #else
-
+static ulong mem_address;
+#endif
 static ulong ramoops_pmsg_size = MIN_MEM_SIZE;
 module_param_named(pmsg_size, ramoops_pmsg_size, ulong, 0400);
 MODULE_PARM_DESC(pmsg_size, "size of user space message log");
 
-static ulong mem_address;
-#endif
 module_param(mem_address, ulong, 0400);
 MODULE_PARM_DESC(mem_address,
 		"start of reserved RAM used to store oops/panic logs");
